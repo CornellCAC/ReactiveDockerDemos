@@ -1,3 +1,8 @@
+# Running
+
+You can run individual examples from [sbt](http://www.scala-sbt.org). Once you start sbt, you can compile all examples by running 'compile'. A particular example can be run by using `run-main`, e.g., ` run-main ScriptRunnerPar`.
+
+
 # Notes
 
 ## Docker system configuraiton
