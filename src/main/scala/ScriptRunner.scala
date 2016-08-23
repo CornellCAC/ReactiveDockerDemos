@@ -17,6 +17,8 @@ object ScriptRunner {
     implicit val docker = Docker("localhost")
     val timeout = Duration(30, SECONDS)
 
+    // Note that this command loops forever; normally a container will stop when its
+    // command exits
     val cmd = Seq("/bin/sh", "-c", "while true; do echo hello world; sleep 1; done")
     val containerName = "reactive-docker"
     val imageTag = RepositoryTag.create("busybox", Some("latest"))
