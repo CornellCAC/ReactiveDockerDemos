@@ -4,6 +4,7 @@ import edu.cornell.cac.docker.api.entities.{ContainerConfig, ContainerId, Reposi
 import scala.concurrent.{Future, TimeoutException}
 import scala.concurrent.duration.{Duration, MINUTES, SECONDS}
 import scala.concurrent.ExecutionContext.Implicits.global
+import scala.util.Try
 //import edu.cornell.cac.docker.api.json.Formats._        // use this for API version < v1.12
 import edu.cornell.cac.docker.api.json.FormatsV112._
 
@@ -49,26 +50,31 @@ object ScriptRunnerPar {
     val completions = futurecContainerIds.map { fId => Future {
       val containerId = Await.result(fId, timeout)
       Thread.sleep(runtime.toMillis)
-      try {
-        Await.result(docker.containerStop(containerId), timeout)
-        println(s"container $containerId stopped")
-      } catch {
-        case ex: TimeoutException =>
-          println(s"Stopping container $containerId timed out: ${ex.getMessage}")
-          println(s"Attempting to kill container $containerId.")
-          try {
-            Await.result(docker.containerKill(containerId), timeout)
-          } catch {
-            case ex: TimeoutException => println(s"Killing container $containerId timed out.")
-          }
-      }
-      try {
-        Await.result(docker.containerRemove(containerId), timeout)
-        println(s"container $containerId removed")
-      } catch {
-        case ex: TimeoutException =>
-          println(s"Removing container $containerId timed out: ${ex.getMessage}")
-      }
+
+      val stoppedAndRemoved: Try[Boolean] = for {
+        stopRes <- Try{
+          val res = Await.result(docker.containerStop(containerId), timeout)
+          println(s"container $containerId stopped")
+          res
+        }.recover{
+          case ex: TimeoutException =>
+            println(s"Stopping container $containerId timed out: ${ex.getMessage}")
+            println(s"Attempting to kill container $containerId.")
+            Try(Await.result(docker.containerKill(containerId), timeout)).recover{
+              case ex: TimeoutException =>
+                println(s"Killing container $containerId timed out.")
+                false
+              case _ => false
+            }.get
+          case _ => false
+        }
+        removeRes <- Try(Await.result(docker.containerRemove(containerId), timeout)).recover{
+          case ex: TimeoutException =>
+            println(s"Removing container $containerId timed out: ${ex.getMessage}")
+            false
+          case _ => false
+        }
+      } yield removeRes && stopRes
     }}
 
 
