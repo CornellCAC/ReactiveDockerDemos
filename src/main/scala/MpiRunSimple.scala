@@ -1,8 +1,8 @@
 import edu.cornell.cac.docker.api._
-import edu.cornell.cac.docker.api.entities.{ContainerConfig, ContainerId, RepositoryTag}
+import edu.cornell.cac.docker.api.entities._
 
 import scala.concurrent.ExecutionContext.Implicits.global
-import scala.concurrent.duration.{Duration, SECONDS, MINUTES}
+import scala.concurrent.duration.{Duration, MINUTES, SECONDS}
 import scala.concurrent.{Future, TimeoutException}
 import scala.util.Try
 //import edu.cornell.cac.docker.api.json.Formats._        // use this for API version < v1.12
@@ -16,9 +16,18 @@ object MpiRunSimple {
   def main(args: Array[String]): Unit = {
 
     implicit val docker = Docker("localhost")
+
+    // Without this, we don't have shell functionality for e.g., IO redirects
+    val shellRunner: Option[Seq[String]] = Some(Seq("/bin/sh", "-c"))
+
     val timeout = Duration(30, SECONDS)
     val containerCount = 4
-    val runtime = Duration(3, MINUTES)
+    val runtime = Duration(7, MINUTES)
+    val outPathContainer = "/data"
+    val outPathHost = "/tmp"
+    val stderrFile = s"$outPathContainer/my_mpi_job.stderr"
+    val stdoutFile = s"$outPathContainer/my_mpi_job.stdout"
+    val outputRedirect =  Seq("2>", stderrFile, ">", stdoutFile)
 
     // Note that this command loops forever; a container will stop when its
     // command exits
@@ -30,7 +39,15 @@ object MpiRunSimple {
     val containerName = "dockeropenmpi"
     val imageHeadTag = RepositoryTag.create(headImg, Some("latest"))
     val imageNodeTag = RepositoryTag.create(nodeImg, Some("latest"))
-    val cfg = ContainerConfig("dockeropenmpi", cmd)
+
+    //TODO: make this easier to do:
+    val bindMntVol: BindMountVolume = BindMountVolume(outPathContainer, outPathHost)
+    val hc1Binds = HostConfig(Some(Seq(bindMntVol)))
+
+    val cfg = ContainerConfiguration(Some("dockeropenmpi"), Some(cmd),
+      Volumes = Some(Map(outPathContainer -> DockerVolume(outPathContainer, outPathHost))),
+      HostConfig = Some(hc1Binds)
+    )
 
     // create image, returns a list of docker messages when finished
     val messages = Await.result(docker.imageCreate(imageHeadTag), timeout) ::
@@ -61,8 +78,10 @@ object MpiRunSimple {
     println("Do some work ...")
     docker.containerExecCreate(
       containerIds.head,
-      //Seq("dd", "if=/dev/zero", "of=/dev/null")
-      "mpirun -n 2 python /home/mpirun/mpi4py_benchmarks/all_tests.py".split(' ').toSeq
+      shellRunner.getOrElse(Seq()) ++ Seq((
+        "mpirun -n 2 python /home/mpirun/mpi4py_benchmarks/all_tests.py".split(' ').toSeq ++
+          outputRedirect
+        ).mkString(" "))
     ).flatMap{case (execId, msgs) =>
       println("initiating exec start!") // DEBUG
       if (msgs.nonEmpty) msgs.foreach(msg => println(msg))
@@ -70,14 +89,14 @@ object MpiRunSimple {
     }
 
     //TODO: remove this and add a wait method of some sort (once modeled as futures or tasks)
-    Thread.sleep(40000)
+    Thread.sleep(runtime.toMillis)
 
     // Attempt normal container stop by stopping CMD process
     containerIds.foreach{id => docker.containerExec(id, sshStopCmd)}
 
     // stop & remove containers
     val completions = containerIds.map{ containerId => Future {
-      Thread.sleep(runtime.toMillis)
+      Thread.sleep(timeout.toMillis)
 
       val stoppedAndRemoved: Try[Boolean] = for {
         stopRes <- Try{
